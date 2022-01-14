@@ -1,0 +1,284 @@
+# Load relevant packages 
+library(dplyr)
+library(lme4) # for lmer() mixed models	
+library(lmerTest)  # for significance test on lmer() mixed models	
+library(cAIC4) # for cAIC	
+library(r2glmm) # for r2beta	
+library(MuMIn) # for r.squaredGLMM	
+library(ggplot2)
+library(ggpubr) # ggarrange
+library(influence.ME) # for influence (this will also load the lme4 package)	
+library(usdm) # for vif()
+library(formattable)
+
+# Function for standardized coefficients 
+stdCoef.merMod <- function(object) {	
+  sdy <- sd(getME(object,"y"))	
+  sdx <- apply(getME(object,"X"), 2, sd)	
+  sc <- fixef(object)*sdx/sdy	
+  se.fixef <- coef(summary(object))[,"Std. Error"]	
+  se <- se.fixef*sdx/sdy	
+  return(data.frame(stdcoef=sc, stdse=se))	
+}	
+
+
+
+# Load Data 
+
+surgery_A <- read.csv("https://raw.githubusercontent.com/kekecsz/SIMM61-Course-materials/main/Home_assignment/surgery_data_1.csv")
+surgery_B <- read.csv("https://raw.githubusercontent.com/kekecsz/SIMM61-Course-materials/main/Home_assignment/surgery_data_2.csv")
+
+################################################################################
+
+# Primary investigation of the data 
+
+summary(surgery_A)
+# -> neg household income but since not included in the model case is kept 
+
+
+surgery_A <- surgery_A %>%
+  mutate(sex = factor(sex),
+         hospital = factor(hospital))
+
+summary(surgery_A)
+# woman should be coded as female 
+# order of hospitals should be changes 
+
+surgery_A <- surgery_A %>%
+  mutate(sex = factor(case_when(sex == "female" ~ "female",
+                                sex == "woman" ~ "female",
+                                sex == "male" ~ "male")),
+         hospital = factor(hospital, levels = c("hospital_1", "hospital_2", "hospital_3", "hospital_4", "hospital_5", "hospital_6", "hospital_7", "hospital_8", "hospital_9", "hospital_10"),
+                           labels = c(1:10)))
+
+summary(surgery_A)
+
+boxplot(surgery_A$age)
+boxplot(surgery_A$STAI_trait)
+boxplot(surgery_A$weight)
+# age, anxiety and weight have a few outliers that need to be regarded later on 
+
+################################
+
+summary(surgery_B)
+
+# Set certain variables to factors 
+surgery_B <- surgery_B %>%
+  mutate(sex = factor(sex),
+         hospital = factor(hospital, labels = c(11:20)))
+####################################################################
+# Density plot for dependent variable
+pain.dens_A <- ggplot(surgery_A)+
+  geom_density(aes(x=pain, color = hospital))+
+  xlim(0,10)+
+  ylim(0,0.63)
+
+pain.dens_B <- ggplot(surgery_B)+
+  geom_density(aes(x=pain, color = hospital))+
+  xlim(0,10)+
+  ylim(0,0.63)
+
+ggarrange(pain.dens_A, pain.dens_B, labels = c("Surgery_A", "Surgery_B"),
+          label.x = 0.05,
+          label.y = 0.99,
+          font.label = list(size = 10, color = "#888888"))
+
+####################################################################
+
+# MODEL 
+
+mod_ran_int = lmer(pain ~ sex + age + STAI_trait + pain_cat + mindfulness + cortisol_serum + (1|hospital), data = surgery_A)	
+
+summary(mod_ran_int)
+
+r.squaredGLMM(mod_ran_int)	
+
+surgery_A = surgery_A %>% 	
+  mutate(resid = residuals(mod_ran_int))	
+
+# which hospital has the highest overall pain 
+ranef(mod_ran_int)$hospital
+
+########################################################################
+
+# ASSUMPTIONs 
+
+## Influencial Cases 
+influence_observation = influence(mod_ran_int, obs = T)$alt.fixed
+influence_group = influence(mod_ran_int, group = "hospital")$alt.fixed	
+
+data_plot_inflience = as_tibble(influence_group) %>% 	
+  gather(colnames(influence_group), value = coefficient, key = predictor)	
+
+data_plot_inflience %>% 	
+  ggplot() +	
+  aes(x = 1, y = coefficient, group = predictor) +	
+  geom_violin() +	
+  geom_jitter(width = 0.2) +	
+  facet_wrap( ~ predictor, scales = "free")	
+
+# -> nothing special 
+
+## Normality 
+### normal destribution of the residuals 
+
+qqmath(mod_ran_int, id=0.05)	
+# looks good 
+
+surgery_A %>% 	
+  ggplot() +	
+  aes(sample = resid) +	
+  stat_qq() +	
+  stat_qq_line() +	
+  facet_wrap( ~ hospital, scales = "free")
+# most plots look quite okay some are a bit off 
+
+### normality for random effects 
+qqmath(ranef(mod_ran_int))	
+
+
+# Linearity 
+## total 
+plot(mod_rep_int_quad, arg = "pearson")	
+
+
+## seperated into different fixed predictors 
+ggplot(surgery_A)+
+  geom_point(aes(age, resid))+
+  geom_hline(yintercept = 0, linetype = "dashed")
+
+ggplot(surgery_A)+
+  geom_point(aes(STAI_trait, resid))+
+  geom_hline(yintercept = 0, linetype = "dashed")
+
+ggplot(surgery_A)+
+  geom_point(aes(pain_cat, resid))+
+  geom_hline(yintercept = 0, linetype = "dashed")
+
+ggplot(surgery_A)+
+  geom_point(aes(cortisol_serum, resid))+
+  geom_hline(yintercept = 0, linetype = "dashed")
+
+# looks all good!
+
+
+# Homoscedascity 
+plot(mod_ran_int, arg = "pearson")	
+# no funnel shape 
+
+homosced_mod = lm(resid^2 ~ hospital, data = surgery_A)	
+summary(homosced_mod)	
+# -> F-test is not significant (homoscedascity)
+
+
+# Multicollinearity 
+
+pairs.panels(surgery_A[,c("sex", "age", "STAI_trait", "pain_cat", "mindfulness", "cortisol_serum")], col = "red", lm = T)	
+
+vif(surgery_A[,c("sex", "age", "STAI_trait", "pain_cat", "mindfulness", "cortisol_serum")])
+#no high values
+
+
+##########################################################################
+
+Vcov <- vcov(mod_ran_int, useScale = FALSE)
+coef <- as.numeric(format(round(fixef(mod_ran_int), digits = 3), nsmall = 2))
+se <- sqrt(diag(Vcov))
+zval <- coef / se
+pval <- 2 * pnorm(abs(zval), lower.tail = FALSE)
+pval2 <- case_when(pval <= 0.001 ~ "***",
+                   pval <= 0.01 & pval > 0.001 ~ "**",
+                   pval <= 0.05 & pval > 0.01 ~ "*",
+                   pval <= 0.1 & pval > 0.05 ~ ".",
+                   TRUE ~ "")
+
+# Confidence intervals for the coefficients	
+confi <- format(round(confint(mod_ran_int), digits = 3), nsmall = 2)
+confi <- confi[c(3:9),]
+
+# standardized Betas	
+std.coef <- round(stdCoef.merMod(mod_ran_int), digits = 3)
+
+table <- data.frame(cbind(coef, std.coef[,1], confi, pval2))
+colnames(table) <- c("b", "std. b", "95%CI[LL]", "95%CI[UL]", "p-value" )
+rownames(table) <- c("(Intercept)", "Sex(male)", "Age", "Anxiety", "Pain Catastrophizing", "Mindfulness", "Cortisol(blood)")
+
+formattable(table)
+
+###################################################################
+
+# PREDICTION for surgery_B Data 
+pred.values <- predict(mod_ran_int, newdata = surgery_B, type = "response",
+                       allow.new.levels = TRUE)
+
+# calculating R² for surgery B 
+TSS <- sum((surgery_B$pain - mean(surgery_B$pain))^2)
+
+RSS <- sum((pred.values - surgery_B$pain)^2)
+
+R2 <- 1-RSS/TSS
+# -> 0.35 
+
+
+###########################################################################
+
+# Calculating a model only with the most inlfuencial variable 
+
+mod_ran_slo <- lmer(pain ~ cortisol_serum + (cortisol_serum|hospital), data = surgery_A)
+
+summary(mod_ran_slo)
+ranef(mod_ran_slo)
+
+Vcov <- vcov(mod_ran_slo, useScale = FALSE)
+coef <- as.numeric(format(round(fixef(mod_ran_slo), digits = 3), nsmall = 2))
+se <- sqrt(diag(Vcov))
+zval <- coef / se
+pval <- 2 * pnorm(abs(zval), lower.tail = FALSE)
+pval2 <- case_when(pval <= 0.001 ~ "***",
+                   pval <= 0.01 & pval > 0.001 ~ "**",
+                   pval <= 0.05 & pval > 0.01 ~ "*",
+                   pval <= 0.1 & pval > 0.05 ~ ".",
+                   TRUE ~ "")
+
+# Confidence intervals for the coefficients	
+confi <- format(round(confint(mod_ran_slo), digits = 3), nsmall = 2)
+confi <- confi[c(5:6),]
+
+# standardized Betas	
+std.coef <- round(stdCoef.merMod(mod_ran_slo), digits = 3)
+
+table <- data.frame(cbind(coef, std.coef[,1], confi, pval2))
+colnames(table) <- c("b", "std. b", "95%CI[LL]", "95%CI[UL]", "p-value" )
+rownames(table) <- c("(Intercept)", "Cortisol(blood)")
+
+table.slo <- formattable(table)
+
+
+surgery_A$fit <- predict(mod_ran_slo)
+
+ggplot(surgery_A, aes(cortisol_serum, pain, col = hospital))+
+  geom_smooth(method = "lm", se = F, fullrange = T, size = 0.5)+
+  geom_point(alpha = 0.3)+
+  facet_wrap(~hospital)+
+  xlim(0,10)+
+  theme_minimal()+
+  xlab("Cortisol(blood)")+
+  ylab("Pain")
+
+
+######################################
+
+# Visualization of the random slope model
+
+# Estimating intercept and slope for every hospital
+ranfix <- as.data.frame(t(apply(ranef(mod_ran_slo)$hospital, 1,function(x) fixef(mod_ran_slo) + x)))
+colnames(ranfix) <- c("Intercept", "Cortisol")
+ranfix$hospital <- as.factor(c(1:10))
+
+
+# Plotting
+
+ggplot()+
+  geom_abline(data = ranfix, aes(slope = Cortisol, intercept = Intercept, col = hospital))+
+  geom_point(data=surgery_A, aes(cortisol_serum, pain, col = hospital))+
+  xlim(0,9)
