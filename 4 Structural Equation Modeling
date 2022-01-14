@@ -1,0 +1,94 @@
+# Loading relevant packages
+library(psychTools)
+library(lavaan) # for SEM fit and model functions	
+library(semPlot) # for semPaths()	
+library(semptools) # for set_sem_layout	
+library(tidyverse) # for tidy code	
+library(CompQuadForm) # for multiple linearity
+library(ICS) # mvnorm.kur.test
+
+# Load Data 
+data <- holzinger.swineford
+
+# Model building 
+model.A <- '
+visual.percep =~ t01_visperc + t02_cubes + t03_frmbord + t04_lozenges
+verbal.ability =~ t06_paracomp + t07_sentcomp + t09_wordmean
+process.speed =~ t10_addition + t12_countdot + t13_sccaps
+visual.percep ~~ verbal.ability
+visual.percep ~~ process.speed
+verbal.ability ~~ process.speed
+'
+
+# Checking assumptions for ML estimator
+# Multivariate normality 
+mvnorm.kur.test(data[,c("t01_visperc", "t02_cubes", "t03_frmbord", "t04_lozenges", "t06_paracomp", "t07_sentcomp", "t09_wordmean", "t10_addition", "t12_countdot", "t13_sccaps")])	
+mvnorm.skew.test(data[,c("t01_visperc", "t02_cubes", "t03_frmbord", "t04_lozenges", "t06_paracomp", "t07_sentcomp", "t09_wordmean", "t10_addition", "t12_countdot", "t13_sccaps")])
+# both p-values are significant -> non-normality
+# MLM estimator (ML with Satorra-Bentler corrections) is used 
+# -> normality-adjusted robust standard errors should be used
+
+
+fit.A <- sem(model.A, data = data, estimator = "MLM")
+
+plot.A = semPaths(fit.A, label.scale=F, nCharNodes = 8,	
+                sizeMan2=3.5, sizeMan=9, asize=3, edge.color="black", residuals = F, fixedStyle = 1,
+                whatLabels = "est")	
+
+summary(fit.A, fit.measures = T)
+# Model Chi-Squared: 84.004 (df = 32, p = 0.000)
+# CFI = 0.941
+# TLI = 0.917
+# RMSEA 0.075 (90 Percent confidence interval - lower = 0.056, - upper = 0.095)
+# AIC = 8296.856
+# BIC = 8309.177
+
+# -> no sufficient model fit 
+
+
+model.B <- '
+visual.percep =~ t01_visperc + t02_cubes + t03_frmbord + t04_lozenges
+verbal.ability =~ t06_paracomp + t07_sentcomp + t09_wordmean
+process.speed =~ t10_addition + t12_countdot + t13_sccaps
+visual.percep ~~ verbal.ability
+visual.percep ~~ process.speed
+verbal.ability ~~ process.speed
+t10_addition ~~ t12_countdot
+'
+
+fit.B <- sem(model.B, data = data, estimator = "MLM")
+
+plot.B <- semPaths(fit.B, label.scale=F, nCharNodes = 8,	
+                  sizeMan2=3.5, sizeMan=9, asize=3, edge.color="black", residuals = F, fixedStyle = 1)	
+
+summary(fit.B, fit.measures = T)
+# Test statistic = 53.971 (df = 31, p = 0.006)
+# CFI = 0.971
+# TLI = 0.958
+# RMSEA = 0.05 ( 90 Percent confidence interval - lower = 0.03,-upper = 0.074)
+# AIC = 8267.652
+# BIC = 8356.623
+
+
+# Since models are nested we can also run a Chi-squared difference test 
+anova <- as.matrix(anova(fit.A, fit.B))
+
+CFI <- as.data.frame(matrix(c(0.974, 0.941), ncol = 1))
+colnames(CFI) <- "CFI"
+
+anova <- round(data.frame(anova, CFI), digits = 3)
+rownames(anova) <- c("Model.B", "Model.A")
+formattable(as.data.frame(anova))
+# significant on a 0.001 level
+
+
+summary(fit.B, standardized = T)
+
+standardizedsolution(fit.B)
+
+plot.B <- semPaths(fit.B, label.scale=F, nCharNodes = 8,	
+                   sizeMan2=3.5, sizeMan=9, asize=3, edge.color="black", residuals = F, fixedStyle = 1,
+                   whatLabels = "std")	
+
+
+
