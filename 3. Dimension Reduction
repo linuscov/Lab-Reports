@@ -1,0 +1,303 @@
+# Load relevant packages 
+library(dplyr)
+library(reshape2) # melt function
+library(ggplot2)
+library(psych) #bartlett spericity test 
+library(ICS) # multivariate normality 
+library(GPArotation)
+library(corrplot) #correlation plot
+library(GGally) # for ggcorr 
+library(ggcorrplot)
+library(formattable)
+library(htmltools)
+library(webshot)   
+library(ggpubr) # ggarrange 
+library(car) # vif()
+
+
+#####################
+
+getS3method("print","loadings") #get the hidden method and modify it
+printLoadings <- function (x, digits = 3, cutoff = 0.1, sort = FALSE, ...) 
+{
+  Lambda <- unclass(x)
+  p <- nrow(Lambda)
+  factors <- ncol(Lambda)
+  if (sort) {
+    mx <- max.col(abs(Lambda))
+    ind <- cbind(1L:p, mx)
+    mx[abs(Lambda[ind]) < 0.5] <- factors + 1
+    Lambda <- Lambda[order(mx, 1L:p), ]
+  }
+  cat("\nLoadings:\n")
+  fx <- format(round(Lambda, digits))
+  names(fx) <- NULL
+  nc <- nchar(fx[1L], type = "c")
+  fx[abs(Lambda) < cutoff] <- paste(rep(" ", nc), collapse = "")
+  newx <- print(fx, quote = FALSE, ...) # I assigned this to a variable
+  vx <- colSums(x^2)
+  varex <- rbind(`SS loadings` = vx)
+  if (is.null(attr(x, "covariance"))) {
+    varex <- rbind(varex, `Proportion Var` = vx/p)
+    if (factors > 1) 
+      varex <- rbind(varex, `Cumulative Var` = cumsum(vx/p))
+  }
+  cat("\n")
+  print(round(varex, digits))
+  invisible(newx) #previously returned x
+}
+
+
+
+export_formattable <- function(f, file, width = "100%", height = NULL, 
+                               background = "white", delay = 0.2)
+{
+  w <- as.htmlwidget(f, width = width, height = height)
+  path <- html_print(w, background = background, viewer = NULL)
+  url <- paste0("file:///", gsub("\\\\", "/", normalizePath(path)))
+  webshot(url,
+          file = file,
+          selector = ".formattable_widget",
+          delay = delay)
+}
+# source: https://github.com/renkun-ken/formattable/issues/26
+
+
+###################################################################
+
+# Load Data 
+animal <- read.csv("https://raw.githubusercontent.com/kekecsz/SIMM61-Course-materials/main/Exercise_06%20-%20CFA%20and%20EFA/animalrights.csv")
+
+# Exploratory and Descriptive Data Analysis 
+summary(animal)
+
+animal.fac <- animal %>% mutate_if(is.integer,as.factor)
+summary(animal.fac)
+# some variables are a bit skewed but not very concerning 
+# no high level of missingness -> simply omitting missing values 
+# very high share of females not very representative 
+
+
+animal_compl <- na.omit(animal)
+
+animal_melt <- melt(animal_compl)
+ggplot(animal_melt,aes(x = value)) + 
+  facet_wrap(~variable,scales = "free_x") + 
+  geom_histogram()
+#####################################################################
+
+animal_compl <- animal_compl %>%
+  mutate(
+    ar16 = 6-ar16,
+    ar19 = 6-ar19,
+    ar21 = 6-ar21,
+    ar24 = 6-ar24,
+    ar28 = 6-ar28
+  )
+
+
+summary(animal_compl$ar16)
+#####################################################################
+# Checking Assumption 
+
+# Factorability 
+## creating correlation matrix
+animal.item <- animal_compl[,c(1:28)]
+animal.cor <- cor(animal.item)
+
+corrplot(animal.cor)
+ggcorr(animal.cor)+
+  labs(fill = "Correlation")
+ggcorrplot(cor(animal.item), p.mat = cor_pmat(animal.item),
+           hc.order = TRUE, type = "lower", legend.title = "Correlation")
+
+
+
+# Bartlett sphericity test 
+## Checking reliability of the test 
+nrow(animal.item)/ncol(animal.item)
+# -> at least close to five 
+
+cortest.bartlett(animal.cor, n=149)
+# -> low p-value indicates factorability 
+
+# Kaiser-Meyer-Olkin Test (KMO)
+KMO(animal.cor)
+# -> high overall MSA level 
+# -> high MSA for every item (all above 0.7)
+
+# -> Factorability is met 
+
+
+# Multivariate Normality
+mvnorm.kur.test(animal.item)
+
+mvnorm.skew.test(animal.item)
+
+# both test for kurtosis and skewness show that assumption of multivariate normality is violated, so paf extraction method is used 
+
+#########################################################################
+# EXPLORATORY FACTOR ANALYSIS
+
+## Determining number of factor 
+fa.parallel(animal.cor, n.obs = nrow(animal.item), fa = "fa", fm = "pa")
+
+nfactors(animal.cor, n.obs = nrow(animal.item))
+
+eigen(animal.cor)$values
+
+# screen test : 1
+# Parallel Test : 4
+# Kaiser-Guttman criterion : 7
+# VSS : 1-2
+# MAP : 2
+
+# starting with four 
+
+######################################
+
+animal.mod <- fa(animal.cor, nfactors = 4, fm = "pa")
+
+animal.mod.comm <- as.data.frame(sort(animal.mod$communality, decreasing =T))
+animal.mod.comm
+# omitting variables with a communality below 0.2
+
+mean(animal.mod$communality)
+# not very good 
+
+######################################
+
+# Factor rotation 
+animal.mod.var <- fa(animal.cor[,-3], nfactors = 4, fm ="pa", rotate = "varimax")
+animal.mod.obl <- fa(animal.cor[,-3], nfactors = 4, fm ="pa", rotate = "oblimin")
+animal.mod.pro <- fa(animal.cor[,-3], nfactors = 4, fm ="pa", rotate = "promax")
+
+print(animal.mod.var$loadings, cutoff = 0.3)
+print(animal.mod.obl$loadings, cutoff = 0.3)
+print(animal.mod.pro$loadings, cutoff = 0.3)
+
+# seems to devide variables that in fact belong together 
+
+animal.mod.var <- fa(animal.item[,-3], nfactors = 3, fm ="pa", rotate = "varimax")
+animal.mod.pro <- fa(animal.item[,-3], nfactors = 3, fm ="pa", rotate = "promax")
+animal.mod.obl <- fa(animal.item[,-3], nfactors = 3, fm ="pa", rotate = "oblimin")
+
+print(animal.mod.var$loadings, cutoff = 0.4)
+# a lot of crossloading 
+print(animal.mod.pro$loadings, cutoff = 0.4)
+# does not really fit to the theoretical consideration
+print(animal.mod.obl$loadings, cutoff = 0.4)
+# seems to be the best option 
+
+# step wise exclusion of low and cross loadings 
+animal.mod.obl <- fa(animal.item[,-c(3,16)], nfactors = 3, fm ="pa", rotate = "oblimin")
+animal.mod.obl <- fa(animal.item[,-c(1,3,16)], nfactors = 3, fm ="pa", rotate = "oblimin")
+animal.mod.obl <- fa(animal.item[,-c(1,3,8,16)], nfactors = 3, fm ="pa", rotate = "oblimin")
+animal.mod.obl <- fa(animal.item[,-c(1,3,8,11,16)], nfactors = 3, fm ="pa", rotate = "oblimin")
+animal.mod.obl <- fa(animal.item[,-c(1,3,8,11,14,16)], nfactors = 3, fm ="pa", rotate = "oblimin")
+animal.mod.obl <- fa(animal.item[,-c(1,3,8,10,11,14,16)], nfactors = 3, fm ="pa", rotate = "oblimin")
+animal.mod.obl <- fa(animal.item[,-c(1,3,8,10,11,14,16,25)], nfactors = 3, fm ="pa", rotate = "oblimin")
+
+summary(animal.mod.obl)
+
+# create vectors for proportion and cumulative variance 
+animal.mod.obl
+
+variances <- data.frame(matrix(c(0.19,0.16,0.09,0.19,0.35,0.44), ncol = 3))
+rownames(variances) <- c("Proportion Var", "Cumulative Var")
+colnames(variances) <- c("PA2", "PA1", "PA3")
+
+loadings <- printLoadings(animal.mod.obl$loadings, cutoff = 0.4)
+load.table <- as.data.frame(loadings)
+
+factor.table <- rbind(load.table, variances)
+
+colnames(factor.table) <- c("research", "food and cloth", "animal lives")
+factor.table <- formattable(factor.table)
+export_formattable(factor.table, "factor.table.png")
+
+webshot::install_phantomjs()
+
+fa.diagram(animal.mod.obl, cex = 0.7, e.size = 0.08)
+
+
+# checking communality again 
+animal.mod.obl.comm <- as.data.frame(sort(animal.mod.obl$communality, decreasing =T))
+animal.mod.obl.comm
+
+mean(animal.mod.obl$communality)
+# not very good 
+
+########################################################################
+
+# Extracting and Naming Factors 
+factorscores = factor.scores(animal.item[,-c(1,3,8,10,11,14,16,25)], animal.mod.obl)$scores	
+colnames(factorscores) <- c("research", "food_cloth", "animal_lives")
+
+animal_compl <- cbind(animal_compl, factorscores)
+
+summary(animal_compl)
+
+lives.plot <- ggplot(animal_compl)+
+  geom_histogram(aes(animal_lives), col = "lightblue")+
+  xlim(-3,3)+
+  theme_minimal()+
+  xlab("Animal lives")
+
+research.plot <- ggplot(animal_compl)+
+  geom_histogram(aes(research), col = "lightblue")+
+  xlim(-3,3)+
+  theme_minimal()+
+  xlab("Research")
+
+food.plot <- ggplot(animal_compl)+
+  geom_histogram(aes(food_cloth), col = "lightblue")+
+  xlim(-3,3)+
+  theme_minimal()+
+  xlab("Food and Clothing")
+
+ggarrange(research.plot, food.plot, lives.plot,
+          ncol = 3, nrow =1)
+
+########################################################################
+
+# Impact on liberal attitude 
+
+# Model 
+animal.lm <- lm(liberal ~ research + food_cloth + animal_lives, 
+                data = animal_compl)
+summary(animal.lm)
+
+# Table for coefficients 
+coef <- animal.lm$coefficients
+tvalues <- coef(summary(animal.lm))[,"t value"]
+confi <- confint(animal.lm)
+
+pval <- coef(summary(animal.lm))[,"Pr(>|t|)"]
+pval2 <- case_when(pval <= 0.001 ~ "***",
+                   pval <= 0.01 & pval > 0.001 ~ "**",
+                   pval <= 0.05 & pval > 0.01 ~ "*",
+                   pval <= 0.1 & pval > 0.05 ~ ".",
+                   TRUE ~ "")
+
+table <- round(data.frame(coef,tvalues, confi), digits = 3)
+table$pval <- pval2
+colnames(table) <- c("Estimates", "t-values", "95%CI[LL]", "95%CI[UL]", "p-value")
+rownames(table) <- c("(Intercept)", "Research", "Food and Cloth", "Animal Lives")
+
+formattable(table)
+
+
+
+# Check Assumptions for Linear Regression
+plot(animal.lm, which = 1)
+# no heteroscedacity  
+
+plot(animal.lm, which = 2)
+#relatively linear
+
+plot(animal.lm, which = 5)
+# no serious outliers, according to Cooks distance 
+
+vif(animal.lm)
+# no multicollinearity 
