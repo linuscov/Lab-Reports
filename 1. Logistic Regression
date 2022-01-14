@@ -1,0 +1,260 @@
+# Load necessary packages 
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(mlogit)
+library(performance) # r2_mcfadden
+library(car)
+library(pscl) # for pR2 
+library(formattable)
+library(naniar) # for mcar_test
+library(broom) # for tidy 
+
+
+# Load Data 
+titanic <- read.csv("https://raw.githubusercontent.com/kekecsz/SIMM61-Course-materials/main/Home_assignment/Titanic%20-%20training%20set.csv")
+
+
+################################################################################
+
+# Exploratory and Descriptive Analysis 
+summary(titanic)
+
+
+# Examine outlier for fare 
+std.fare <- (titanic$Fare - mean(titanic$Fare))/sd(titanic$Fare)
+max(std.fare)
+
+# Creating binary variable for having a cabin 
+titanic <- titanic %>%
+  mutate(Cabin.bin = case_when(Cabin == "" ~ 0,
+                               TRUE ~ 1))
+
+# Setting empty spots in "Embarked" to NA 
+titanic$Embarked[titanic$Embarked == ""]<-NA 
+
+# Setting certain variables to factors 
+titanic <- titanic %>%
+  mutate(Survived = factor(Survived, labels = c("not survived", "survived")),
+         Pclass = factor(Pclass, labels = c("First", "Second", "Third")),
+         Sex = factor(Sex),
+         Embarked = factor(Embarked),
+         Cabin.bin = factor(Cabin.bin, labels = c("no cabin", "cabin")))
+
+summary(titanic)
+
+
+#############################
+# Missing values 
+percent_missing = (colSums(is.na(titanic))/nrow(titanic))*100
+percent_missing 
+
+mcar_test(titanic)
+# low p-value -> not missing at random 
+
+titanic_compl <- na.omit(titanic)
+
+summary(titanic)
+summary(titanic_compl)
+
+# Not Missing at random share of third class, no cabin and men higher among missing values 
+
+
+########################################################################
+
+# Visual investigation of the impact of different variables 
+
+class <- ggplot(titanic_compl)+
+  geom_bar(aes(x = Pclass, fill = Survived), position = "fill", show.legend = F)+
+  theme_minimal()+
+  ylab("Percentage")+
+  xlab("Class")
+
+sex <- ggplot(titanic_compl)+
+  geom_bar(aes(x = Sex, fill = Survived), position = "fill")+
+  theme_minimal()+
+  ylab("Percentage")+
+  xlab("Sex")+ 
+  labs(fill ="")
+
+ggarrange(class, sex, 
+          labels = c("Class", "Sex"),
+          common.legend = T,
+          legend = "bottom",
+          font.label = list(color = "darkgrey", size = 12),
+          hjust = -0.2,
+          vjust = 0.9)
+
+
+ggplot(titanic_compl)+
+  geom_bar(aes(x = SibSp, fill = Survived), position = "dodge")+
+  theme_minimal()+
+  ylab("Percentage")+
+  xlab("Siblings/Spouses")
+
+ggplot(titanic_compl)+
+  geom_bar(aes(x = Parch, fill = Survived), position = "dodge")+
+  theme_minimal()+
+  ylab("Percentage")+
+  xlab("Parents/Children")
+
+
+ggplot(titanic_compl)+
+  geom_boxplot(aes(y = Age, col = Survived))+
+  facet_grid(~Sex)+
+  theme_minimal()
+
+ggplot(titanic_compl)+
+  geom_bar(aes(x = Embarked, fill = Survived), position = "dodge")+
+  theme_minimal()+
+  ylab("Percentage")+
+  xlab("Harbor of Embarkment")
+# not taken because huge majority entered in S 
+
+
+ggplot(titanic_compl)+
+  geom_bar(aes(x = Cabin.bin, fill = Survived), position = "dodge")+
+  facet_wrap(~Pclass)
+  theme_minimal()+
+  ylab("Percentage")+
+  xlab("Cabin")
+# not taken ass it is nearly entirely covered by Class 
+
+  ggplot(titanic_compl[titanic_compl$Fare < 500,])+
+    geom_density(aes(x = Fare))+
+    facet_wrap(~Pclass, scales = "free_y")+
+    theme_minimal()+
+    ylab("Percentage")+
+    xlab("Siblings/Spouses")
+# same as for the cabin 
+  
+  
+########################################################################
+
+# LOGISTIC REGRESSION 
+  
+titanic.mod.null <- glm(Survived ~ 1, 
+                        data = titanic_compl, 
+                        family = binomial())
+summary(titanic.mod.null)
+r2_mcfadden(titanic.mod.null)
+
+titanic.mod.1 <- glm(Survived ~ Sex + Pclass, 
+                     data = titanic_compl, 
+                     family = binomial())
+summary(titanic.mod.1)
+r2_mcfadden(titanic.mod.1)
+
+titanic.mod.2 <- glm(Survived ~ Sex + Pclass + Age + SibSp + Parch, 
+                      data = titanic_compl, 
+                      family = binomial())
+summary(titanic.mod.2)
+r2_mcfadden(titanic.mod.2)
+
+titanic.mod.3 <- glm(Survived ~ Sex + Pclass + Age + SibSp + Parch+
+                         Age:Sex + Age:Parch, 
+                     data = titanic_compl, 
+                     family = binomial())                           
+summary(titanic.mod.3)
+r2_mcfadden(titanic.mod.3)
+pR2(titanic.mod.3)
+
+# Model comparison 
+anova(titanic.mod.null, titanic.mod.1, titanic.mod.2, titanic.mod.3, test = "Chisq")
+
+# Showing coefficients of the final model 
+table <- as.data.frame(tidy(titanic.mod.3)[,-c(1,3)])
+table$odds.ratio <- exp(table$estimate)
+confi <- exp(confint.default(titanic.mod.3))
+
+table <- round(data.frame(table, confi), digits = 3)
+
+
+colnames(table) <- c("Coefficients", "Z-statistic", "P-value", "Odds ratio", "95%CI[LL]", "95%CI[UL]" )
+
+formattable(table)
+
+###############################
+# Testing Assumptions 
+
+probabilities <- as.numeric(predict(titanic.mod.3, type = "response"))
+
+## Linearity 
+titanic_compl$logit = log(probabilities/(1-probabilities))
+
+ggplot(titanic_compl, aes(Age,logit, col = Sex))+
+  geom_point(size  = 0.5, alpha = 0.5)+
+  geom_smooth(method = "loess")
+
+ggplot(titanic_compl, aes(SibSp,logit))+
+  geom_point(size  = 0.5, alpha = 0.5)+
+  geom_smooth(method = "loess")
+
+ggplot(titanic_compl, aes(Parch,logit))+
+  geom_point(size  = 0.5, alpha = 0.5)+
+  geom_smooth(method = "loess")
+#not perfect but okay 
+
+#Box Tidwell test 
+lreg <- glm(Survived ~ SibSp+Age+Parch, data = titanic_compl, family = binomial())
+logodds <- lreg$linear.predictors
+boxTidwell(logodds ~ Age + SibSp + Parch, data = titanic_compl)
+
+## Heteroscedascity 
+plot(titanic.mod.3, which = 1)
+
+## Influential Cases 
+plot(titanic.mod.3, which = 4)
+plot(titanic.mod.3, which = 5)
+# no case outside the vidual boundaries 
+
+## Multicollinearity 
+vif(titanic.mod.2)
+# no problematic vif values 
+
+
+#######################################################################
+# Checking accuracy of the Model 
+
+## recoding predicted cases into survived and not survived 
+titanic_compl <- titanic_compl %>% 	
+  mutate(pred = predict(titanic.mod.3)) %>% 	
+  mutate(pred = case_when(pred <= 0 ~ "not survived",	
+                               pred > 0 ~ "survived"))	
+
+## identifying correct predictions 
+titanic_compl <- titanic_compl %>%
+  mutate(correct_pred = case_when(pred == Survived ~ "correct",
+                                  pred != Survived ~ "incorrect"))
+
+
+# calculating overall prediction rate 
+titanic_compl %>%	
+  group_by(correct_pred) %>%	
+  summarise(count = n()) %>%	
+  mutate(freq = count / sum(count))	
+
+
+# calculating prediction rate for people who survived 
+titanic_compl %>%	
+  filter(Survived == "survived")%>%
+  group_by(correct_pred) %>%	
+  summarise(count = n()) %>%	
+  mutate(freq = count / sum(count))	
+
+
+# calculating prediction rate for people who did not survive
+titanic_compl %>%	
+  filter(Survived == "not survived")%>%
+  group_by(correct_pred) %>%	
+  summarise(count = n()) %>%	
+  mutate(freq = count / sum(count))	
+
+prediction <- matrix(c("76%", "24%", "14.4%", "85.6%"), ncol = 2)
+colnames(prediction) <- c("Survived*predicted", "Not Survived*predicted")
+rownames(prediction) <- c("Survived", "Not Survived")
+prediction <- data.frame(prediction)
+
+formattable(prediction)
+###################################################################
+
